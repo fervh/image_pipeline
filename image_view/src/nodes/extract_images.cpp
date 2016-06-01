@@ -68,7 +68,7 @@ public:
     ros::NodeHandle local_nh("~");
 
     std::string format_string;
-    local_nh.param("filename_format", format_string, std::string("frame%04i.jpg"));
+    local_nh.param("filename_format", format_string, std::string("img%04i.png"));
     filename_format_.parse(format_string);
 
     local_nh.param("sec_per_frame", sec_per_frame_, 0.1);
@@ -102,7 +102,7 @@ public:
     cv::Mat image;
     try
     {
-      image = cv_bridge::toCvShare(msg, "bgr8")->image;
+      image = cv_bridge::toCvShare(msg)->image;
     } catch(cv_bridge::Exception)
     {
       ROS_ERROR("Unable to convert %s image to bgr8", msg->encoding.c_str());
