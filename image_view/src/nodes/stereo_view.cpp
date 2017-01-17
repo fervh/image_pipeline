@@ -488,14 +488,14 @@ public:
     image_mutex_.unlock();
     if (!last_left_image_.empty()) {
       cv::imshow("left", last_left_image_);
-      cv::waitKey(1);
+      cv::waitKey(3);
     }
     if (!last_right_image_.empty()) {
       cv::imshow("right", last_right_image_);
-      cv::waitKey(1);
+      cv::waitKey(3);
     }
     cv::imshow("disparity", disparity_color_);
-    cv::waitKey(1);
+    cv::waitKey(3);
   }
 
   void saveImage(const char* prefix, const cv::Mat& image)
