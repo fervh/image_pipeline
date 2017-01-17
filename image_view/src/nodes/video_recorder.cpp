@@ -30,21 +30,22 @@
 cv::VideoWriter outputVideo;
 
 int g_count = 0;
+ros::Time g_last_wrote_time = ros::Time(0);
 std::string encoding;
 std::string codec;
 int fps;
 std::string filename;
-double min_depth_range = 0.0;
-double max_depth_range = 5.5;
-bool use_dynamic_range = false;
+double min_depth_range;
+double max_depth_range;
+bool use_dynamic_range;
+int colormap;
 
 
-void callback(const sensor_msgs::ImageConstPtr& image_msg, const sensor_msgs::CameraInfoConstPtr& info)
+void callback(const sensor_msgs::ImageConstPtr& image_msg)
 {
-    if (!outputVideo.isOpened() && !info) return;
-    else if (!outputVideo.isOpened() && info) {
+    if (!outputVideo.isOpened()) {
 
-        cv::Size size(info->width, info->height);
+        cv::Size size(image_msg->width, image_msg->height);
 
         outputVideo.open(filename, 
 #if CV_MAJOR_VERSION == 3
@@ -68,15 +69,26 @@ void callback(const sensor_msgs::ImageConstPtr& image_msg, const sensor_msgs::Ca
         ROS_INFO_STREAM("Starting to record " << codec << " video at " << size << "@" << fps << "fps. Press Ctrl+C to stop recording." );
 
     }
-    else if (outputVideo.isOpened() && info) return;
+
+    if ((image_msg->header.stamp - g_last_wrote_time) < ros::Duration(1 / fps))
+    {
+      // Skip to get video with correct fps
+      return;
+    }
 
     try
     {
-      const cv::Mat image = cv_bridge::cvtColorForDisplay(cv_bridge::toCvShare(image_msg), encoding, use_dynamic_range, min_depth_range, max_depth_range)->image;
+      cv_bridge::CvtColorForDisplayOptions options;
+      options.do_dynamic_scaling = use_dynamic_range;
+      options.min_image_value = min_depth_range;
+      options.max_image_value = max_depth_range;
+      options.colormap = colormap;
+      const cv::Mat image = cv_bridge::cvtColorForDisplay(cv_bridge::toCvShare(image_msg), encoding, options)->image;
       if (!image.empty()) {
         outputVideo << image;
         ROS_INFO_STREAM("Recording frame " << g_count << "\x1b[1F");
         g_count++;
+        g_last_wrote_time = image_msg->header.stamp;
       } else {
           ROS_WARN("Frame skipped, no data!");
       }
@@ -93,12 +105,26 @@ int main(int argc, char** argv)
     ros::NodeHandle nh;
     ros::NodeHandle local_nh("~");
     local_nh.param("filename", filename, std::string("output.avi"));
+    bool stamped_filename;
+    local_nh.param("stamped_filename", stamped_filename, false);
     local_nh.param("fps", fps, 15);
     local_nh.param("codec", codec, std::string("MJPG"));
     local_nh.param("encoding", encoding, std::string("bgr8"));
+    // cv_bridge::CvtColorForDisplayOptions
     local_nh.param("min_depth_range", min_depth_range, 0.0);
-    local_nh.param("max_depth_range", max_depth_range, 5.5);
+    local_nh.param("max_depth_range", max_depth_range, 0.0);
     local_nh.param("use_dynamic_depth_range", use_dynamic_range, false);
+    local_nh.param("colormap", colormap, -1);
+
+    if (stamped_filename) {
+      std::size_t found = filename.find_last_of("/\\");
+      std::string path = filename.substr(0, found + 1);
+      std::string basename = filename.substr(found + 1);
+      std::stringstream ss;
+      ss << ros::Time::now().toNSec() << basename;
+      filename = path + ss.str();
+      ROS_INFO("Video recording to %s", filename.c_str());
+    }
 
     if (codec.size() != 4) {
         ROS_ERROR("The video codec must be a FOURCC identifier (4 chars)");
@@ -107,9 +133,7 @@ int main(int argc, char** argv)
 
     image_transport::ImageTransport it(nh);
     std::string topic = nh.resolveName("image");
-    image_transport::CameraSubscriber sub_camera = it.subscribeCamera(topic, 1, &callback);
-    image_transport::Subscriber sub_image = it.subscribe(topic, 1,
-            boost::bind(callback, _1, sensor_msgs::CameraInfoConstPtr()));
+    image_transport::Subscriber sub_image = it.subscribe(topic, 1, callback);
 
     ROS_INFO_STREAM("Waiting for topic " << topic << "...");
     ros::spin();

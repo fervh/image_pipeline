@@ -41,7 +41,6 @@
 *  2) tf and tf2
 *********************************************************************/
 
-#include <eigen_conversions/eigen_msg.h>
 #include <ros/ros.h>
 #include <nodelet/nodelet.h>
 #include <tf2_ros/transform_listener.h>
@@ -118,19 +117,21 @@ class ImageRotateNodelet : public nodelet::Nodelet
     try
     {
       std::string input_frame_id = frameWithDefault(config_.input_frame_id, input_frame_from_msg);
+      std::string target_frame_id = frameWithDefault(config_.target_frame_id, input_frame_from_msg);
+      std::string source_frame_id = frameWithDefault(config_.source_frame_id, input_frame_from_msg);
 
       // Transform the target vector into the image frame.
       target_vector_.header.stamp = msg->header.stamp;
-      target_vector_.header.frame_id = frameWithDefault(config_.target_frame_id, input_frame_id);
+      target_vector_.header.frame_id = target_frame_id;
       geometry_msgs::Vector3Stamped target_vector_transformed;
-      geometry_msgs::TransformStamped transform = tf_buffer_.lookupTransform(config_.target_frame_id, input_frame_id, msg->header.stamp);
+      geometry_msgs::TransformStamped transform = tf_buffer_.lookupTransform(target_frame_id, input_frame_id, msg->header.stamp);
       tf2::doTransform(target_vector_, target_vector_transformed, transform);
 
       // Transform the source vector into the image frame.
       source_vector_.header.stamp = msg->header.stamp;
-      source_vector_.header.frame_id = frameWithDefault(config_.source_frame_id, input_frame_id);
+      source_vector_.header.frame_id = source_frame_id;
       geometry_msgs::Vector3Stamped source_vector_transformed;
-      transform = tf_buffer_.lookupTransform(config_.source_frame_id, input_frame_id, msg->header.stamp);
+      transform = tf_buffer_.lookupTransform(source_frame_id, input_frame_id, msg->header.stamp);
       tf2::doTransform(source_vector_, source_vector_transformed, transform);
 
       //NODELET_INFO("target: %f %f %f", target_vector_.x(), target_vector_.y(), target_vector_.z());
@@ -180,7 +181,7 @@ class ImageRotateNodelet : public nodelet::Nodelet
     transform.transform.translation.x = 0;
     transform.transform.translation.y = 0;
     transform.transform.translation.z = 0;
-    tf::quaternionEigenToMsg(Eigen::Quaterniond(Eigen::AngleAxis<double>(angle_, Eigen::Vector3d(0.0, 0.0, 1.0))), transform.transform.rotation);
+    tf2::convert(tf2::Quaternion(tf2::Vector3(0.0, 0.0, 1.0), angle_), transform.transform.rotation);
     transform.header.frame_id = msg->header.frame_id;
     transform.child_frame_id = frameWithDefault(config_.output_frame_id, msg->header.frame_id + "_rotated");
     transform.header.stamp = msg->header.stamp;
