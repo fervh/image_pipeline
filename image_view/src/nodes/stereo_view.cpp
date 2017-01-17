@@ -1,13 +1,13 @@
 /*********************************************************************
 * Software License Agreement (BSD License)
-* 
+*
 *  Copyright (c) 2008, Willow Garage, Inc.
 *  All rights reserved.
-* 
+*
 *  Redistribution and use in source and binary forms, with or without
 *  modification, are permitted provided that the following conditions
 *  are met:
-* 
+*
 *   * Redistributions of source code must retain the above copyright
 *     notice, this list of conditions and the following disclaimer.
 *   * Redistributions in binary form must reproduce the above
@@ -17,7 +17,7 @@
 *   * Neither the name of the Willow Garage nor the names of its
 *     contributors may be used to endorse or promote products derived
 *     from this software without specific prior written permission.
-* 
+*
 *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 *  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
 *  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
@@ -64,7 +64,7 @@ static void destroy(GtkWidget *widget, gpointer data)
 namespace enc = sensor_msgs::image_encodings;
 
 // colormap for disparities, RGB
-static unsigned char colormap[768] = 
+static unsigned char colormap[768] =
   { 150, 150, 150,
     107, 0, 12,
     106, 0, 18,
@@ -345,17 +345,19 @@ private:
   boost::shared_ptr<ExactSync> exact_sync_;
   boost::shared_ptr<ApproximateSync> approximate_sync_;
   int queue_size_;
-  
+
   ImageConstPtr last_left_msg_, last_right_msg_;
   cv::Mat last_left_image_, last_right_image_;
   cv::Mat_<cv::Vec3b> disparity_color_;
   boost::mutex image_mutex_;
-  
+
   boost::format filename_format_;
   int save_count_;
 
   ros::WallTimer check_synced_timer_;
   int left_received_, right_received_, disp_received_, all_received_;
+
+  bool blending_;
 
 public:
   StereoView(const std::string& transport)
@@ -366,10 +368,12 @@ public:
     ros::NodeHandle local_nh("~");
     bool autosize;
     local_nh.param("autosize", autosize, true);
-    
+
     std::string format_string;
     local_nh.param("filename_format", format_string, std::string("%s%04i.jpg"));
     filename_format_.parse(format_string);
+
+    local_nh.param("blending", blending_, false);
 
     // Do GUI window setup
     int flags = autosize ? cv::WND_PROP_AUTOSIZE : 0;
@@ -440,7 +444,7 @@ public:
                const DisparityImageConstPtr& disparity_msg)
   {
     ++all_received_; // For error checking
-    
+
     image_mutex_.lock();
 
     // May want to view raw bayer data
@@ -470,7 +474,7 @@ public:
     const cv::Mat_<float> dmat(disparity_msg->image.height, disparity_msg->image.width,
                                (float*)&disparity_msg->image.data[0], disparity_msg->image.step);
     disparity_color_.create(disparity_msg->image.height, disparity_msg->image.width);
-    
+
     for (int row = 0; row < disparity_color_.rows; ++row) {
       const float* d = dmat[row];
       for (int col = 0; col < disparity_color_.cols; ++col) {
@@ -496,6 +500,12 @@ public:
     }
     cv::imshow("disparity", disparity_color_);
     cv::waitKey(3);
+    if (blending_) {
+      cv::Mat blended;
+      addWeighted( last_left_image_, 0.5, disparity_color_, 0.5, 0.0, blended);
+      cv::imshow("blended", blended);
+      cv::waitKey(3);
+    }
   }
 
   void saveImage(const char* prefix, const cv::Mat& image)
@@ -508,7 +518,7 @@ public:
       ROS_WARN("Couldn't save %s image, no data!", prefix);
     }
   }
-  
+
   static void mouseCb(int event, int x, int y, int flags, void* param)
   {
     if (event == cv::EVENT_LBUTTONDOWN)
@@ -518,7 +528,7 @@ public:
     }
     if (event != cv::EVENT_RBUTTONDOWN)
       return;
-    
+
     StereoView *sv = (StereoView*)param;
     boost::lock_guard<boost::mutex> guard(sv->image_mutex_);
 
@@ -567,7 +577,7 @@ int main(int argc, char **argv)
 
   std::string transport = argc > 1 ? argv[1] : "raw";
   StereoView view(transport);
-  
+
   ros::spin();
   return 0;
 }
