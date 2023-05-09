@@ -80,8 +80,13 @@ class DisplayThread(threading.Thread):
     def run(self):
         cv2.namedWindow("display", cv2.WINDOW_NORMAL)
         cv2.setMouseCallback("display", self.opencv_calibration_node.on_mouse)
-        cv2.createTrackbar("Camera type: \n 0 : pinhole \n 1 : fisheye", "display", 0,1, self.opencv_calibration_node.on_model_change)
+        cv2.createTrackbar("Camera type: \n 0 : pinhole \n 1 : fisheye \n 2 : omnidirectional", "display", 0,2, self.opencv_calibration_node.on_model_change)
         cv2.createTrackbar("scale", "display", 0, 100, self.opencv_calibration_node.on_scale)
+        cv2.createTrackbar("offset_x", "display", 50, 100, self.opencv_calibration_node.on_offset_x)
+        cv2.createTrackbar("offset_y", "display", 50, 100, self.opencv_calibration_node.on_offset_y)
+        cv2.createTrackbar("rotation_x", "display", 0, 100, self.opencv_calibration_node.on_rotation_x)
+        cv2.createTrackbar("rotation_y", "display", 0, 100, self.opencv_calibration_node.on_rotation_y)
+        cv2.createTrackbar("rotation_z", "display", 0, 100, self.opencv_calibration_node.on_rotation_z)
 
         while True:
             if self.queue.qsize() > 0:
@@ -280,11 +285,31 @@ class OpenCVCalibrationNode(CalibrationNode):
             print("Cannot change camera model until the first image has been received")
             return
 
-        self.c.set_cammodel( CAMERA_MODEL.PINHOLE if model_select_val < 0.5 else CAMERA_MODEL.FISHEYE)
+        self.c.set_cammodel( CAMERA_MODEL.PINHOLE if model_select_val < 0.5 else (CAMERA_MODEL.FISHEYE if model_select_val < 1.5 else CAMERA_MODEL.OMNIDIRECTIONAL ))
 
     def on_scale(self, scalevalue):
         if self.c.calibrated:
             self.c.set_alpha(scalevalue / 100.0)
+
+    def on_offset_x(self, scalevalue):
+        if self.c.calibrated:
+            self.c.set_offset(x=scalevalue / 100.0)
+
+    def on_offset_y(self, scalevalue):
+        if self.c.calibrated:
+            self.c.set_offset(y=scalevalue / 100.0)
+
+    def on_rotation_x(self, scalevalue):
+        if self.c.calibrated:
+            self.c.set_rotation(x=scalevalue / 100.0)
+
+    def on_rotation_y(self, scalevalue):
+        if self.c.calibrated:
+            self.c.set_rotation(y=scalevalue / 100.0)
+
+    def on_rotation_z(self, scalevalue):
+        if self.c.calibrated:
+            self.c.set_rotation(z=scalevalue / 100.0)
 
     def button(self, dst, label, enable):
         dst.fill(255)

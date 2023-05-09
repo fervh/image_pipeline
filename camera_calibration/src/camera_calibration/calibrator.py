@@ -32,6 +32,8 @@
 # ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+FISHEYE_DEBUG = 0
+
 from io import BytesIO
 import cv2
 import cv_bridge
@@ -46,11 +48,13 @@ import time
 from distutils.version import LooseVersion
 import sys
 from enum import Enum
+import tf
 
 # Supported camera models
 class CAMERA_MODEL(Enum):
     PINHOLE = 0
     FISHEYE = 1
+    OMNIDIRECTIONAL = 2
 
 # Supported calibration patterns
 class Patterns:
@@ -296,6 +300,8 @@ def _get_dist_model(dist_params, cam_model):
             dist_model = "plumb_bob"
     elif CAMERA_MODEL.FISHEYE == cam_model:
         dist_model = "equidistant"
+    elif CAMERA_MODEL.OMNIDIRECTIONAL == cam_model:
+        dist_model = "omnidirectional"
     else:
         dist_model = "unknown"
     return dist_model
@@ -459,7 +465,7 @@ class Calibrator():
         progress = [min((hi - lo) / r, 1.0) for (lo, hi, r) in zip(min_params, max_params, self.param_ranges)]
         # If we have lots of samples, allow calibration even if not all parameters are green
         # TODO Awkward that we update self.goodenough instead of returning it
-        self.goodenough = (len(self.db) >= 40) or all([p == 1.0 for p in progress])
+        self.goodenough = (len(self.db) >= 40) or all([p == 1.0 for p in progress]) if not FISHEYE_DEBUG else True
 
         return list(zip(self._param_names, min_params, max_params, progress))
 
@@ -761,9 +767,11 @@ class MonoCalibrator(Calibrator):
         opts = self.mk_object_points(boards)
         # If FIX_ASPECT_RATIO flag set, enforce focal lengths have 1/1 ratio
         intrinsics_in = numpy.eye(3, dtype=numpy.float64)
+        distortion_in = numpy.zeros(4, dtype=numpy.float64)
+        xi_in = numpy.zeros(1, dtype=numpy.float64)
 
         if self.pattern == Patterns.ChArUco:
-            if self.camera_model == CAMERA_MODEL.FISHEYE:
+            if (self.camera_model == CAMERA_MODEL.FISHEYE or self.camera_model == CAMERA_MODEL.OMNIDIRECTIONAL):
                 raise NotImplemented("Can't perform fisheye calibration with ChArUco board")
 
             reproj_err, self.intrinsics, self.distortion, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(
@@ -790,11 +798,30 @@ class MonoCalibrator(Calibrator):
             reproj_err, self.intrinsics, self.distortion, rvecs, tvecs = cv2.fisheye.calibrate(
                 opts, ipts, self.size,
                 intrinsics_in, None, flags = self.fisheye_calib_flags)
+        elif self.camera_model == CAMERA_MODEL.OMNIDIRECTIONAL:
+            print("mono omni calibration...")
+            ipts64 = numpy.asarray(ipts, dtype=numpy.float64)
+            ipts = ipts64
+            opts64 = numpy.asarray(opts, dtype=numpy.float64)
+            opts = opts64
+            distortion_in = numpy.zeros((1,4), dtype=numpy.float64)
+            reproj_err, self.intrinsics, self.xi, self.distortion, rvecs, tvecs, idx = cv2.omnidir.calibrate(
+                opts,
+                ipts,
+                self.size,
+                intrinsics_in,
+                xi_in,
+                distortion_in,
+                flags=cv2.omnidir.CALIB_FIX_XI,
+                criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 200, 0.0001)
+            )
 
         # R is identity matrix for monocular calibration
         self.R = numpy.eye(3, dtype=numpy.float64)
         self.P = numpy.zeros((3, 4), dtype=numpy.float64)
-
+        self.Knew = numpy.array([[self.size[0]/3.1415, 0, 0],
+                                 [0.0, self.size[1]/3.1415, self.size[1]/2],
+                                 [0.0, 0.0, 1.0]], dtype=numpy.float64)
         self.set_alpha(0.0)
 
     def set_alpha(self, a):
@@ -817,10 +844,37 @@ class MonoCalibrator(Calibrator):
         elif self.camera_model == CAMERA_MODEL.FISHEYE:
             # NOTE: estimateNewCameraMatrixForUndistortRectify not producing proper results, using a naive approach instead:
             self.P[:3,:3] = self.intrinsics[:3,:3]
-            self.P[0,0] /= (1. + a)
-            self.P[1,1] /= (1. + a)
+            self.P[0,0] /= (1. + a*4)
+            self.P[1,1] /= (1. + a*4)
             self.mapx, self.mapy = cv2.fisheye.initUndistortRectifyMap(self.intrinsics, self.distortion, self.R, self.P, self.size, cv2.CV_32FC1)
+        elif self.camera_model == CAMERA_MODEL.OMNIDIRECTIONAL:
+            self.Knew[0,0] = self.size[0] / (3.1415 + a*4)
+            self.Knew[1,1] = self.size[1] / (3.1415 + a*4)
+            self.mapx, self.mapy = cv2.omnidir.initUndistortRectifyMap(self.intrinsics, self.distortion, self.xi, self.R, self.Knew, self.size, cv2.CV_32FC1, cv2.omnidir.RECTIFY_CYLINDRICAL)
 
+    def set_offset(self, x=-1, y=-1):
+        """
+        Set the alpha value for the calibrated camera solution.  The alpha
+        value is a zoom, and ranges from 0 (zoomed in, all pixels in
+        calibrated image are valid) to 1 (zoomed out, all pixels in
+        original image are in calibrated image).
+        """
+
+        if self.camera_model == CAMERA_MODEL.OMNIDIRECTIONAL:
+            if x > 0:
+                self.Knew[0,2] = 0 + self.size[0]*(x-0.5)
+            elif y > 0:
+                self.Knew[1,2] = self.size[1]/2.0 + self.size[1]*(y-0.5)
+
+            self.mapx, self.mapy = cv2.omnidir.initUndistortRectifyMap(self.intrinsics, self.distortion, self.xi, self.R, self.Knew, self.size, cv2.CV_32FC1, cv2.omnidir.RECTIFY_CYLINDRICAL)
+
+    def set_rotation(self, x=-1, y=-1, z=-1):
+        if self.camera_model == CAMERA_MODEL.OMNIDIRECTIONAL:
+            q = tf.transformations.quaternion_from_euler(x*3.14 if x>0 else 0.0, y*3.14 if y>0 else 0.0, z*3.14 if z>0 else 0.0)
+            r = tf.transformations.quaternion_matrix(q)
+            self.R = r[:3,:3]
+
+            self.mapx, self.mapy = cv2.omnidir.initUndistortRectifyMap(self.intrinsics, self.distortion, self.xi, self.R, self.Knew, self.size, cv2.CV_32FC1, cv2.omnidir.RECTIFY_CYLINDRICAL)
 
     def remap(self, src):
         """
@@ -842,6 +896,8 @@ class MonoCalibrator(Calibrator):
             return cv2.undistortPoints(src, self.intrinsics, self.distortion, R = self.R, P = self.P)
         elif self.camera_model == CAMERA_MODEL.FISHEYE:
             return cv2.fisheye.undistortPoints(src, self.intrinsics, self.distortion, R = self.R, P = self.P)
+        elif self.camera_model == CAMERA_MODEL.OMNIDIRECTIONAL:
+            return cv2.omnidir.undistortPoints(src, self.intrinsics, self.distortion, xi = self.xi, R = self.R)
 
     def as_message(self):
         """ Return the camera calibration as a CameraInfo message """
@@ -1127,6 +1183,7 @@ class StereoCalibrator(Calibrator):
             # TODO: implement stereo ChArUco calibration
             raise NotImplemented("Stereo calibration not implemented for ChArUco boards")
 
+        assert self.camera_model != CAMERA_MODEL.OMNIDIRECTIONAL
         if self.camera_model == CAMERA_MODEL.PINHOLE:
             print("stereo pinhole calibration...")
             if LooseVersion(cv2.__version__).version[0] == 2:
